@@ -7,10 +7,11 @@ from collections.abc import Iterable
 from pytube import YouTube, Channel, Playlist
 
 
-def download_video(video_url: str, audio_only=True, output_path=pathlib.Path.cwd()):
+def download_video(video_url: str, audio_only=True, output_path=pathlib.Path.cwd(), use_oauth=False):
     video_stream = None
     try:
-        yt = YouTube(video_url)
+        logger.info(f'Using oauth: {use_oauth}')
+        yt = YouTube(video_url, use_oauth=True, allow_oauth_cache=True) if use_oauth else YouTube(video_url)
 
         if audio_only:
             video_stream = yt.streams.filter(only_audio=True).first()
@@ -34,7 +35,7 @@ def download_video(video_url: str, audio_only=True, output_path=pathlib.Path.cwd
         return False
 
 
-def download_multiple(url_list: Iterable[str], directory: pathlib.Path, audio_only=True):
+def download_multiple(url_list: Iterable[str], directory: pathlib.Path, audio_only=True, use_oauth=False):
     if not directory.exists():
         directory.mkdir(exist_ok=True)
 
@@ -49,11 +50,11 @@ def download_multiple(url_list: Iterable[str], directory: pathlib.Path, audio_on
             elif status is None:
                 download_status[url] = False
 
-            ok = download_video(url, audio_only=audio_only, output_path=directory)
+            ok = download_video(url, audio_only=audio_only, output_path=directory, use_oauth=use_oauth)
             download_status[url] = ok
 
 
-def download_playlist(list_url: str, audio_only=True, output_path=pathlib.Path.cwd(), ord_num=False):
+def download_playlist(list_url: str, audio_only=True, output_path=pathlib.Path.cwd(), ord_num=False, use_oauth=False):
     plist = Playlist(list_url)
 
     title = plist.title
@@ -63,7 +64,26 @@ def download_playlist(list_url: str, audio_only=True, output_path=pathlib.Path.c
 
     playlist_dir = output_path / title
     logger.info(f'Downloading play list: {title} to {playlist_dir}...')
-    download_multiple(plist.video_urls, playlist_dir, audio_only)
+    download_multiple(plist.video_urls, playlist_dir, audio_only, use_oauth=use_oauth)
+
+
+def sync_up_playlist(pl_dir: pathlib.Path, list_url=None, audio_only=True):
+    status_db = pl_dir / '.status'
+    with shelve.open(str(status_db)) as download_status:
+        current_url = download_status.get('url')
+        if list_url:
+            if current_url and current_url != list_url:
+                logger.warning(f'Playlist url {current_url} will be replaced by {list_url}')
+            download_status['url'] = list_url
+        else:
+            if current_url:
+                list_url = current_url
+            else:
+                logger.error('No playlist url found, it must be supplied')
+                return
+    plist = Playlist(list_url)
+    logger.info(f'sync up playlist {plist.title} in {pl_dir}')
+    download_multiple(plist.video_urls, pl_dir, audio_only)
 
 
 def download_channel(channel_url: str, output_path: pathlib.Path, audio_only=True):
@@ -79,11 +99,13 @@ def download_channel(channel_url: str, output_path: pathlib.Path, audio_only=Tru
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('url', help='youtube url')
+    parser.add_argument('--url', action='store', help='youtube url')
     parser.add_argument('-a', '--audio', action='store_true', help='download audio only')
     parser.add_argument('-l', '--list', action='store_true', help='download play list')
     parser.add_argument('-c', '--channel', action='store_true', help='download channel')
     parser.add_argument('-o', '--output', action='store', help='the download directory')
+    parser.add_argument('--oauth', action='store_true', help='use oauth cache to download restricted page')
+    parser.add_argument('--sync', action='store_true', help='sync up the playlist')
 
     logging.basicConfig(
         level=logging.INFO,
@@ -94,10 +116,14 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
     download_dir = pathlib.Path(args.output) if args.output else pathlib.Path.cwd()
+    oauth = bool(args.oauth)
+    audio = bool(args.audio)
     if args.list:
-        download_playlist(args.url, args.audio, download_dir)
+        download_playlist(args.url, audio, download_dir, use_oauth=oauth)
+    elif args.sync:
+        sync_up_playlist(download_dir, args.url, audio)
     elif args.channel:
-        download_channel(args.url, download_dir, args.audio)
+        download_channel(args.url, download_dir, audio)
     else:
-        download_video(args.url, args.audio, download_dir)
+        download_video(args.url, audio, download_dir, use_oauth=oauth)
     # download_playlist(args.url, args.audio, pathlib.Path(args.output))
